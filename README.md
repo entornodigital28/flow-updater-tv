@@ -16,14 +16,33 @@ la instala, sin salir de la app.
 ## Instalar (para cualquiera, no hace falta compu ni saber programar)
 
 1. En el Fire TV Stick, abrí la app **Downloader** (el ícono naranja con
-   una flecha). Si no la tenés, buscala como "Downloader" en la Amazon
-   Appstore del propio Fire TV — es gratis y la usa mucha gente para bajar
-   APKs.
-2. En el campo de la URL escribí exactamente esto y confirmá:
+   una flecha, de AFTVnews). Si no la tenés, buscala como "Downloader" en
+   la Amazon Appstore del propio Fire TV — es gratis y la usa mucha gente
+   para bajar APKs.
+2. Al abrir Downloader por primera vez aparece una pantalla que pide un
+   **código**. Escribí este:
+
+   ```
+   3723480
+   ```
+
+   Es un código corto de [aftv.news](https://aftv.news) que apunta directo
+   a la última versión de Actualizador de Flow — mucho más rápido que
+   tipear una URL larga con el control remoto. Si en vez del código de
+   bienvenida ya estás en la pantalla principal de Downloader, tocá el
+   símbolo **+** o el campo de URL y escribí `aftv.news/3723480` en lugar
+   del código.
+
+   <details>
+   <summary>¿Preferís la URL completa de GitHub en vez del código corto?</summary>
 
    ```
    github.com/entornodigital28/flow-updater-tv/releases/latest/download/ActualizadorDeFlow.apk
    ```
+
+   Hace exactamente lo mismo: el código de aftv.news solo redirige a esa
+   URL.
+   </details>
 
 3. Cuando termine de bajar, tocá **Instalar**. Si es la primera vez que
    instalás algo con Downloader, Fire TV te va a pedir permiso para
