@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
@@ -25,16 +26,26 @@ import java.io.File
 
 const val FLOW_PACKAGE = "ar.com.flow.androidtv"
 private const val DOWNLOAD_FILE_NAME = "flow_update.apkm"
+private const val SELF_UPDATE_FILE_NAME = "flowupdater_self_update.apk"
 
 class MainActivity : Activity() {
 
     private lateinit var webViewContainer: FrameLayout
     private lateinit var statusText: TextView
     private lateinit var updateButton: Button
-    private lateinit var client: ApkMirrorClient
+    private lateinit var selfUpdateText: TextView
+    private lateinit var selfUpdateButton: Button
 
-    private var pendingReleaseUrl: String? = null
+    // Orden de prioridad: si una fuente falla (al buscar la versión o al
+    // descargar), se prueba automáticamente con la siguiente.
+    private lateinit var sources: List<ApkSourceClient>
+    private var activeSourceIndex = 0
+
+    private var pendingSelfUpdateUrl: String? = null
     private var downloadId: Long = -1
+    private var downloadIsSelfUpdate = false
+    private var installingSelfUpdate = false
+
     private val progressHandler = Handler(Looper.getMainLooper())
     private val progressPoller = object : Runnable {
         override fun run() {
@@ -48,8 +59,12 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context, intent: Intent) {
             when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
                 PackageInstaller.STATUS_SUCCESS -> {
-                    setStatus("Flow se actualizó correctamente.")
-                    showOpenFlowButton()
+                    if (installingSelfUpdate) {
+                        setStatus("Actualizador de Flow actualizado. Reiniciando...")
+                    } else {
+                        setStatus("Flow se actualizó correctamente.")
+                        showOpenFlowButton()
+                    }
                 }
                 PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                     @Suppress("DEPRECATION")
@@ -59,7 +74,8 @@ class MainActivity : Activity() {
                 }
                 else -> {
                     val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
-                    setStatus("Error al instalar (código $status): $msg")
+                    val target = if (installingSelfUpdate) "el Actualizador" else "Flow"
+                    setStatus("Error al instalar $target (código $status): $msg")
                 }
             }
         }
@@ -93,11 +109,12 @@ class MainActivity : Activity() {
             }
             val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
             val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            val label = if (downloadIsSelfUpdate) "el Actualizador" else "Flow"
             if (total > 0) {
                 val percent = (downloaded * 100 / total).toInt()
-                setStatus("Descargando Flow... $percent%")
+                setStatus("Descargando $label... $percent%")
             } else {
-                setStatus("Descargando Flow...")
+                setStatus("Descargando $label...")
             }
             return true
         }
@@ -116,14 +133,24 @@ class MainActivity : Activity() {
             when (status) {
                 DownloadManager.STATUS_SUCCESSFUL -> {
                     downloadId = -1
-                    setStatus("Descarga completa, instalando...")
-                    installDownloadedFile()
+                    if (downloadIsSelfUpdate) {
+                        setStatus("Descarga completa, instalando el Actualizador...")
+                        installSelfUpdateFile()
+                    } else {
+                        setStatus("Descarga completa, instalando...")
+                        installDownloadedFile()
+                    }
                 }
                 DownloadManager.STATUS_FAILED -> {
                     downloadId = -1
                     val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                    File(getExternalFilesDir(null), DOWNLOAD_FILE_NAME).delete()
-                    setStatus("Error en la descarga (${downloadErrorText(reason)}). Volvé a tocar 'Descargar e instalar' para reintentar.")
+                    if (downloadIsSelfUpdate) {
+                        File(getExternalFilesDir(null), SELF_UPDATE_FILE_NAME).delete()
+                        setStatus("Error al bajar la actualización del Actualizador (${downloadErrorText(reason)})")
+                    } else {
+                        File(getExternalFilesDir(null), DOWNLOAD_FILE_NAME).delete()
+                        downloadFrom(activeSourceIndex + 1, isRetryAfterFailure = true)
+                    }
                 }
                 else -> {
                     // sigue en curso (running/pending): dejamos que el sondeo de progreso siga solo
@@ -178,12 +205,32 @@ class MainActivity : Activity() {
         updateButton.setOnClickListener { onCheckClicked() }
         panel.addView(updateButton)
 
+        selfUpdateText = TextView(this)
+        selfUpdateText.textSize = 14f
+        selfUpdateText.setTextColor(Color.parseColor("#8AA0FF"))
+        selfUpdateText.setPadding(0, 50, 0, 16)
+        selfUpdateText.visibility = View.GONE
+        panel.addView(selfUpdateText)
+
+        selfUpdateButton = Button(this)
+        selfUpdateButton.text = "Actualizar el Actualizador"
+        selfUpdateButton.isFocusable = true
+        selfUpdateButton.isFocusableInTouchMode = true
+        selfUpdateButton.visibility = View.GONE
+        panel.addView(selfUpdateButton)
+
         root.addView(panel)
         setContentView(root)
         updateButton.requestFocus()
 
-        client = ApkMirrorClient(this, webViewContainer)
+        sources = listOf(
+            ApkMirrorClient(this, webViewContainer),
+            ApkComboClient(this, webViewContainer),
+            ApkPureClient(this, webViewContainer),
+        )
+
         showInstalledVersion()
+        checkSelfUpdate()
     }
 
     override fun onStart() {
@@ -208,7 +255,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        client.release()
+        webViewContainer.removeAllViews()
     }
 
     private fun showInstalledVersion() {
@@ -246,10 +293,20 @@ class MainActivity : Activity() {
     }
 
     private fun onCheckClicked() {
-        setStatus("Buscando última versión en APKMirror...")
-        client.checkLatestVersion(object : ApkMirrorClient.VersionCallback {
-            override fun onVersion(versionName: String, releaseUrl: String) {
-                pendingReleaseUrl = releaseUrl
+        checkVersionFrom(0)
+    }
+
+    /** Busca la versión probando las fuentes en orden; si una falla, sigue con la próxima. */
+    private fun checkVersionFrom(index: Int) {
+        if (index >= sources.size) {
+            setStatus("No se pudo conectar con ninguna fuente (${sources.joinToString(", ") { it.name }}). Probá de nuevo más tarde.")
+            return
+        }
+        val source = sources[index]
+        setStatus("Buscando última versión en ${source.name}...")
+        source.checkLatestVersion(object : ApkSourceClient.VersionCallback {
+            override fun onVersion(versionName: String) {
+                activeSourceIndex = index
                 val installed = installedFlowVersion()
                 runOnUiThread {
                     if (installed == versionName) {
@@ -264,36 +321,70 @@ class MainActivity : Activity() {
             }
 
             override fun onError(message: String) {
-                setStatus("Error: $message")
+                checkVersionFrom(index + 1)
             }
         })
     }
 
     private fun onDownloadClicked() {
-        val releaseUrl = pendingReleaseUrl ?: return
         if (!packageManager.canRequestPackageInstalls()) {
             setStatus("Habilitá 'Instalar apps desconocidas' para esta app y volvé a tocar el botón")
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
-        setStatus("Buscando el link de descarga en APKMirror...")
-        client.downloadLatest(releaseUrl, object : ApkMirrorClient.DownloadCallback {
+        downloadFrom(activeSourceIndex, isRetryAfterFailure = false)
+    }
+
+    /**
+     * Descarga desde la fuente `index`. Si esa fuente no es la que ya tenía la
+     * versión resuelta (por ej. porque venimos de un fallback), primero hay
+     * que volver a navegarla con checkLatestVersion — cada cliente guarda su
+     * propio estado de navegación (a qué página descargar), y ese estado no
+     * se comparte entre fuentes distintas.
+     */
+    private fun downloadFrom(index: Int, isRetryAfterFailure: Boolean) {
+        if (index >= sources.size) {
+            setStatus("No se pudo descargar desde ninguna fuente (${sources.joinToString(", ") { it.name }}). Probá de nuevo más tarde.")
+            return
+        }
+        val source = sources[index]
+
+        val downloadCallback = object : ApkSourceClient.DownloadCallback {
             override fun onFileUrl(url: String, mimeType: String?) {
+                activeSourceIndex = index
                 setStatus("Descargando Flow...")
                 enqueueDownload(url)
             }
 
             override fun onChallenge(message: String) {
-                setStatus(message)
+                downloadFrom(index + 1, isRetryAfterFailure = true)
             }
 
             override fun onError(message: String) {
-                setStatus("Error: $message")
+                downloadFrom(index + 1, isRetryAfterFailure = true)
             }
-        })
+        }
+
+        if (!isRetryAfterFailure && index == activeSourceIndex) {
+            setStatus("Buscando el link de descarga en ${source.name}...")
+            source.downloadLatest(downloadCallback)
+        } else {
+            setStatus("Probando con ${source.name}...")
+            source.checkLatestVersion(object : ApkSourceClient.VersionCallback {
+                override fun onVersion(versionName: String) {
+                    setStatus("Buscando el link de descarga en ${source.name}...")
+                    source.downloadLatest(downloadCallback)
+                }
+
+                override fun onError(message: String) {
+                    downloadFrom(index + 1, isRetryAfterFailure = true)
+                }
+            })
+        }
     }
 
     private fun enqueueDownload(url: String) {
+        downloadIsSelfUpdate = false
         val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
         val request = DownloadManager.Request(Uri.parse(url))
         request.setDestinationInExternalFilesDir(this, null, DOWNLOAD_FILE_NAME)
@@ -307,12 +398,76 @@ class MainActivity : Activity() {
     private fun installDownloadedFile() {
         val file = File(getExternalFilesDir(null), DOWNLOAD_FILE_NAME)
         try {
+            installingSelfUpdate = false
             ApkInstaller.installBundle(this, file)
         } catch (e: Exception) {
             setStatus("Error al preparar la instalación: ${e.message}")
         } finally {
             // Para acá, el contenido ya se copió a la sesión de PackageInstaller
-            // (o falló al hacerlo): el .apkm descargado no hace más falta.
+            // (o falló al hacerlo): el archivo descargado no hace más falta.
+            file.delete()
+        }
+    }
+
+    // --- Autoactualización de esta misma app ---
+
+    private fun checkSelfUpdate() {
+        SelfUpdateChecker.checkLatest(SelfUpdateChecker.Callback { result ->
+            if (result == null) return@Callback
+            val current = try {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            } catch (e: PackageManager.NameNotFoundException) {
+                null
+            }
+            if (isNewerVersion(result.versionName, current ?: "0")) {
+                pendingSelfUpdateUrl = result.downloadUrl
+                selfUpdateText.text = "Hay una versión nueva del Actualizador (v${result.versionName})"
+                selfUpdateText.visibility = View.VISIBLE
+                selfUpdateButton.visibility = View.VISIBLE
+                selfUpdateButton.setOnClickListener { onSelfUpdateClicked() }
+            }
+        })
+    }
+
+    /** Compara versiones tipo "1.10.2" por partes numéricas — "1.9" no puede ganarle a "1.10" comparando como texto. */
+    private fun isNewerVersion(remote: String, local: String): Boolean {
+        val r = remote.split(".").map { it.toIntOrNull() ?: 0 }
+        val l = local.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(r.size, l.size)) {
+            val rv = r.getOrElse(i) { 0 }
+            val lv = l.getOrElse(i) { 0 }
+            if (rv != lv) return rv > lv
+        }
+        return false
+    }
+
+    private fun onSelfUpdateClicked() {
+        val url = pendingSelfUpdateUrl ?: return
+        if (!packageManager.canRequestPackageInstalls()) {
+            selfUpdateText.text = "Habilitá 'Instalar apps desconocidas' para esta app y volvé a tocar el botón"
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        downloadIsSelfUpdate = true
+        selfUpdateText.text = "Descargando actualización del Actualizador..."
+        val dm = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(url))
+        request.setDestinationInExternalFilesDir(this, null, SELF_UPDATE_FILE_NAME)
+        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        val file = File(getExternalFilesDir(null), SELF_UPDATE_FILE_NAME)
+        if (file.exists()) file.delete()
+        downloadId = dm.enqueue(request)
+        progressHandler.post(progressPoller)
+    }
+
+    private fun installSelfUpdateFile() {
+        val file = File(getExternalFilesDir(null), SELF_UPDATE_FILE_NAME)
+        try {
+            installingSelfUpdate = true
+            ApkInstaller.installSingleApk(this, file)
+        } catch (e: Exception) {
+            setStatus("Error al preparar la actualización del Actualizador: ${e.message}")
+        } finally {
             file.delete()
         }
     }

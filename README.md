@@ -122,16 +122,47 @@ sí hay que respetar dos cosas o el link se rompe:
 - La release no puede quedar marcada como "pre-release" — si no, GitHub no
   la considera "latest" y el link sigue apuntando a la anterior.
 
+## Si una fuente falla, prueba con la siguiente sola
+
+La app no depende de un solo sitio. Prueba en este orden:
+
+1. **[APKMirror](https://www.apkmirror.com)** — la fuente principal.
+2. **[APKCombo](https://apkcombo.com)** — se comparó a mano, byte a byte
+   (SHA-256), contra el bundle de APKMirror: **son exactamente el mismo
+   archivo**, el mismo build oficial de Telecom, solo empaquetado distinto.
+3. **[APKPure](https://apkpure.com)** — último recurso. A diferencia de las
+   otras dos, su bundle **no es** el mismo archivo (hash distinto) y le
+   falta el split de 64&nbsp;bits (`arm64-v8a`) — corre en modo 32 bits en
+   vez de 64. Eso sí, tiene la misma firma que Flow, así que la instalación
+   no se rompe por eso.
+
+**[Uptodown](https://uptodown.com) se descartó**: no tiene publicada la
+versión Android TV de Flow, solo la de celular.
+
+Si la fuente activa falla —al buscar la versión o al descargar— se prueba
+la siguiente sola, sin que haya que tocar nada. El mensaje en pantalla
+siempre dice en qué fuente está probando.
+
 ## Cómo funciona por dentro
 
-- `ApkMirrorClient.kt`: navega APKMirror con un `WebView` real (con JS) —
-  busca la ficha de Flow, lee la versión, y sigue la cadena de descarga
-  hasta capturar la URL firmada del archivo final. No usa ninguna API no
-  oficial: todo es la misma navegación que haría una persona.
-- `ApkInstaller.kt`: el archivo de APKMirror es un `.apkm` (zip con varios
-  `.apk` — arquitecturas/idiomas). Se abre el zip y se instalan todas las
-  entradas `.apk` en una sola sesión de `PackageInstaller`, igual que hace
+- `ApkSourceClient.kt`: la interfaz que cumple cada fuente (buscar versión,
+  descargar). `ApkMirrorClient.kt`, `ApkComboClient.kt` y `ApkPureClient.kt`
+  la implementan cada una a su manera — navegan su sitio con un `WebView`
+  real (con JS) hasta capturar la URL firmada del archivo final. Ninguna
+  usa una API no oficial: todo es la misma navegación que haría una
+  persona. `MainActivity.kt` las prueba en orden y pasa a la siguiente si
+  una falla.
+- `ApkInstaller.kt`: el archivo de estas fuentes es un bundle (`.apkm`/
+  `.xapk`, zip con varios `.apk` — arquitecturas/idiomas). Se abre con
+  `ZipFile` (lectura por directorio central, no secuencial — hizo falta
+  para que el bundle de APKCombo, comprimido distinto al de APKMirror,
+  no se corrompiera al copiarlo) y se instalan todas las entradas `.apk`
+  en una sola sesión de `PackageInstaller`, igual que hace
   `adb install-multiple`.
+- `SelfUpdateChecker.kt`: chequea si esta misma app tiene una versión
+  nueva publicada en este repositorio (API de GitHub, sin scraping) y, si
+  hay, ofrece bajarla e instalarla — con el mismo `PackageInstaller` que
+  usa para Flow, pero como un `.apk` suelto en vez de un bundle.
 - `MainActivity.kt`: la pantalla, la comparación de versión instalada vs.
   disponible, la descarga (con porcentaje), el manejo del permiso de
   "orígenes desconocidos" y el botón "Abrir aplicación" al terminar.
@@ -170,3 +201,36 @@ cualquiera de los dos caminos sin duplicar la instalación.
   APKMirror con la misma firma que la versión instalada (por ejemplo, si
   Telecom empieza a firmar distinto), la instalación va a fallar con un
   error de Android (no de esta app) en vez de actualizar.
+
+## Aviso legal
+
+Este es un proyecto personal, independiente y sin fines de lucro. Se
+publica **"tal cual"** ("as is"), sin ninguna garantía — ver la licencia
+MIT en [`LICENSE`](LICENSE), que además deslinda de responsabilidad a
+quien lo escribió por cualquier daño derivado de su uso.
+
+- **Sin afiliación.** Este proyecto no está afiliado, asociado, autorizado,
+  patrocinado ni respaldado de ninguna forma por Telecom Argentina,
+  Cablevisión Fibertel, Flow, Amazon/Amazon Fire TV, APKMirror, APKCombo ni
+  APKPure. "Flow", "Fibertel" y "Telecom" son marcas de sus respectivos
+  dueños, nombradas acá únicamente para describir con qué es compatible la
+  app — no para reclamar ninguna relación con ellos.
+- **Qué hace, en criollo.** La app no aloja, redistribuye ni modifica el
+  APK de Flow: automatiza los mismos pasos que haría una persona a mano
+  (abrir una página pública, tocar un botón de descarga, instalar con el
+  instalador del propio Android) usando un `WebView`. No evita ningún
+  control de acceso ni omite ningún pago.
+- **Sideloading, bajo tu responsabilidad.** Instalar aplicaciones fuera de
+  una tienda oficial ("orígenes desconocidos") tiene los riesgos que
+  Android ya avisa al activar ese permiso. Quien usa esta app decide
+  hacerlo por su cuenta; ni el autor ni este repositorio se hacen
+  responsables por el contenido de sitios de terceros, por cambios que
+  hagan a sus condiciones de uso, ni por cualquier problema que surja de
+  usar el APK de Flow que esos sitios distribuyen.
+- **Marcas y contenido de terceros.** Cualquier logo, nombre o marca
+  mencionados pertenecen a sus dueños y se usan únicamente a título
+  descriptivo/informativo (uso nominativo), sin implicar patrocinio.
+
+Nada de esto es asesoramiento legal — es simplemente cómo se entiende y se
+usa este proyecto. Si representás a alguna de las marcas mencionadas y
+querés hacer un reclamo, abrí un issue en este repositorio.
