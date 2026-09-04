@@ -108,6 +108,20 @@ El APK queda en `app/build/outputs/apk/debug/app-debug.apk`.
    Instalar apps desconocidas → Actualizador de Flow → Activado). Después
    de activarlo, volver a tocar "Descargar e instalar".
 
+## Publicar una versión nueva
+
+El código de Downloader (`3723480` / `aftv.news/3723480`) y el link del
+README apuntan a `.../releases/latest/download/ActualizadorDeFlow.apk` —
+un link "rolling" de GitHub que siempre resuelve a la release marcada como
+**latest**, no a la v1.0.0 en particular. Por eso, al publicar una versión
+nueva **no hace falta tocar el README ni generar un código nuevo**, pero
+sí hay que respetar dos cosas o el link se rompe:
+
+- El asset adjunto a la release tiene que llamarse **exactamente**
+  `ActualizadorDeFlow.apk` (mismo nombre siempre).
+- La release no puede quedar marcada como "pre-release" — si no, GitHub no
+  la considera "latest" y el link sigue apuntando a la anterior.
+
 ## Cómo funciona por dentro
 
 - `ApkMirrorClient.kt`: navega APKMirror con un `WebView` real (con JS) —
